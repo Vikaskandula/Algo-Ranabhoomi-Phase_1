@@ -1,12 +1,16 @@
-from adapter import Solver, dist, route_load
-import time
+from adapter import Solver, route_load
+from adapters.starter import StarterSolver
+from data import distance_matrix
+
+
+SAFETY_S = 0.25
 
 
 # =========================================================
 # 1. 2-OPT
 # =========================================================
 
-def two_opt(instance, route):
+def two_opt(d, route):
 
     if len(route) < 3:
         return False
@@ -16,30 +20,27 @@ def two_opt(instance, route):
     while True:
 
         changed = False
-
         n = len(route)
 
         for i in range(n - 1):
 
-            a = 0 if i == 0 else route[i - 1]
-            b = route[i]
+            a = route[i - 1] if i > 0 else 0
 
             for j in range(i + 1, n):
 
-                c = route[j]
-                d = 0 if j == n - 1 else route[j + 1]
+                b = route[j + 1] if j + 1 < n else 0
 
-                old_distance = (
-                    dist(instance, a, b)
-                    + dist(instance, c, d)
+                old_cost = (
+                    d[a][route[i]]
+                    + d[route[j]][b]
                 )
 
-                new_distance = (
-                    dist(instance, a, c)
-                    + dist(instance, b, d)
+                new_cost = (
+                    d[a][route[j]]
+                    + d[route[i]][b]
                 )
 
-                if new_distance < old_distance:
+                if new_cost < old_cost:
 
                     route[i:j + 1] = reversed(
                         route[i:j + 1]
@@ -59,81 +60,35 @@ def two_opt(instance, route):
 
 
 # =========================================================
-# 2. INITIAL SOLUTION
+# 2. IMPROVE ALL ROUTES
 # =========================================================
 
-def create_initial_routes(instance):
+def improve_routes(d, routes):
 
-    villages = list(
-        range(1, instance.size + 1)
-    )
+    changed = False
 
-    # Put villages having larger demand first.
-    villages.sort(
-        key=lambda v: instance.demand[v],
-        reverse=True
-    )
+    for route in routes:
 
-    routes = []
-    loads = []
+        if two_opt(d, route):
+            changed = True
 
-    for village in villages:
-
-        demand = instance.demand[village]
-
-        placed = False
-
-        # Try putting the village into an existing route.
-        for i in range(len(routes)):
-
-            if (
-                loads[i] + demand
-                <= instance.capacity
-            ):
-
-                routes[i].append(village)
-
-                loads[i] += demand
-
-                placed = True
-
-                break
-
-        # If it doesn't fit anywhere,
-        # create a new tanker route.
-        if not placed:
-
-            if len(routes) >= instance.fleet:
-
-                return None
-
-            routes.append([village])
-
-            loads.append(demand)
-
-    return routes
+    return changed
 
 
 # =========================================================
-# 3. IMPROVE BY MOVING ONE VILLAGE
+# 3. BEST SINGLE-VILLAGE RELOCATION
 # =========================================================
 
-def best_relocation(instance, routes):
+def best_relocation(d, instance, routes, loads):
 
-    best_change = 0
-
+    best_saving = 0
     best_move = None
-
-    loads = [
-        route_load(instance, route)
-        for route in routes
-    ]
 
     for r1 in range(len(routes)):
 
         route1 = routes[r1]
 
-        # Don't completely remove a route.
+        # Don't create an empty route.
         if len(route1) <= 1:
             continue
 
@@ -141,41 +96,32 @@ def best_relocation(instance, routes):
 
             village = route1[i]
 
-            demand = instance.demand[village]
-
             previous1 = (
-                0
-                if i == 0
-                else route1[i - 1]
+                route1[i - 1]
+                if i > 0
+                else 0
             )
 
             next1 = (
-                0
-                if i == len(route1) - 1
-                else route1[i + 1]
+                route1[i + 1]
+                if i + 1 < len(route1)
+                else 0
             )
 
-            # Distance removed from route 1.
-            old_part_1 = (
-                dist(instance, previous1, village)
-                + dist(instance, village, next1)
+            # Cost removed from route 1.
+            remove_cost = (
+                d[previous1][village]
+                + d[village][next1]
+                - d[previous1][next1]
             )
 
-            new_part_1 = dist(
-                instance,
-                previous1,
-                next1
-            )
+            demand = instance.demand[village]
 
-            change1 = new_part_1 - old_part_1
-
-            # Try every other route.
             for r2 in range(len(routes)):
 
                 if r1 == r2:
                     continue
 
-                # Capacity check.
                 if (
                     loads[r2] + demand
                     > instance.capacity
@@ -184,55 +130,36 @@ def best_relocation(instance, routes):
 
                 route2 = routes[r2]
 
-                # Try every insertion position.
                 for position in range(
                     len(route2) + 1
                 ):
 
                     previous2 = (
-                        0
-                        if position == 0
-                        else route2[position - 1]
+                        route2[position - 1]
+                        if position > 0
+                        else 0
                     )
 
                     next2 = (
-                        0
-                        if position == len(route2)
-                        else route2[position]
+                        route2[position]
+                        if position < len(route2)
+                        else 0
                     )
 
-                    old_part_2 = dist(
-                        instance,
-                        previous2,
-                        next2
+                    insert_cost = (
+                        d[previous2][village]
+                        + d[village][next2]
+                        - d[previous2][next2]
                     )
 
-                    new_part_2 = (
-                        dist(
-                            instance,
-                            previous2,
-                            village
-                        )
-                        +
-                        dist(
-                            instance,
-                            village,
-                            next2
-                        )
+                    saving = (
+                        remove_cost
+                        - insert_cost
                     )
 
-                    change2 = (
-                        new_part_2
-                        - old_part_2
-                    )
+                    if saving > best_saving:
 
-                    total_change = (
-                        change1 + change2
-                    )
-
-                    if total_change < best_change:
-
-                        best_change = total_change
+                        best_saving = saving
 
                         best_move = (
                             r1,
@@ -253,23 +180,20 @@ def best_relocation(instance, routes):
         village
     )
 
+    loads[r1] -= instance.demand[village]
+    loads[r2] += instance.demand[village]
+
     return True
 
 
 # =========================================================
-# 4. IMPROVE BY SWAPPING TWO VILLAGES
+# 4. BEST SWAP BETWEEN TWO ROUTES
 # =========================================================
 
-def best_swap(instance, routes):
+def best_swap(d, instance, routes, loads):
 
-    best_change = 0
-
+    best_saving = 0
     best_move = None
-
-    loads = [
-        route_load(instance, route)
-        for route in routes
-    ]
 
     for r1 in range(len(routes)):
 
@@ -281,6 +205,23 @@ def best_swap(instance, routes):
             for i in range(len(route1)):
 
                 village1 = route1[i]
+
+                previous1 = (
+                    route1[i - 1]
+                    if i > 0
+                    else 0
+                )
+
+                next1 = (
+                    route1[i + 1]
+                    if i + 1 < len(route1)
+                    else 0
+                )
+
+                old1 = (
+                    d[previous1][village1]
+                    + d[village1][next1]
+                )
 
                 for j in range(len(route2)):
 
@@ -305,100 +246,44 @@ def best_swap(instance, routes):
                     if new_load2 > instance.capacity:
                         continue
 
-                    # -------- Route 1 --------
-
-                    previous1 = (
-                        0
-                        if i == 0
-                        else route1[i - 1]
-                    )
-
-                    next1 = (
-                        0
-                        if i == len(route1) - 1
-                        else route1[i + 1]
-                    )
-
-                    old1 = (
-                        dist(
-                            instance,
-                            previous1,
-                            village1
-                        )
-                        +
-                        dist(
-                            instance,
-                            village1,
-                            next1
-                        )
-                    )
-
-                    new1 = (
-                        dist(
-                            instance,
-                            previous1,
-                            village2
-                        )
-                        +
-                        dist(
-                            instance,
-                            village2,
-                            next1
-                        )
-                    )
-
-                    # -------- Route 2 --------
-
                     previous2 = (
-                        0
-                        if j == 0
-                        else route2[j - 1]
+                        route2[j - 1]
+                        if j > 0
+                        else 0
                     )
 
                     next2 = (
-                        0
-                        if j == len(route2) - 1
-                        else route2[j + 1]
+                        route2[j + 1]
+                        if j + 1 < len(route2)
+                        else 0
                     )
 
                     old2 = (
-                        dist(
-                            instance,
-                            previous2,
-                            village2
-                        )
-                        +
-                        dist(
-                            instance,
-                            village2,
-                            next2
-                        )
+                        d[previous2][village2]
+                        + d[village2][next2]
+                    )
+
+                    new1 = (
+                        d[previous1][village2]
+                        + d[village2][next1]
                     )
 
                     new2 = (
-                        dist(
-                            instance,
-                            previous2,
-                            village1
-                        )
-                        +
-                        dist(
-                            instance,
-                            village1,
-                            next2
-                        )
+                        d[previous2][village1]
+                        + d[village1][next2]
                     )
 
-                    total_change = (
-                        new1
-                        + new2
-                        - old1
-                        - old2
+                    old_cost = old1 + old2
+                    new_cost = new1 + new2
+
+                    saving = (
+                        old_cost
+                        - new_cost
                     )
 
-                    if total_change < best_change:
+                    if saving > best_saving:
 
-                        best_change = total_change
+                        best_saving = saving
 
                         best_move = (
                             r1,
@@ -412,30 +297,29 @@ def best_swap(instance, routes):
 
     r1, i, r2, j = best_move
 
-    routes[r1][i], routes[r2][j] = (
-        routes[r2][j],
-        routes[r1][i]
+    village1 = routes[r1][i]
+    village2 = routes[r2][j]
+
+    routes[r1][i] = village2
+    routes[r2][j] = village1
+
+    loads[r1] = (
+        loads[r1]
+        - instance.demand[village1]
+        + instance.demand[village2]
+    )
+
+    loads[r2] = (
+        loads[r2]
+        - instance.demand[village2]
+        + instance.demand[village1]
     )
 
     return True
 
 
 # =========================================================
-# 5. IMPROVE ALL ROUTES USING 2-OPT
-# =========================================================
-
-def improve_all_routes(instance, routes):
-
-    for route in routes:
-
-        two_opt(
-            instance,
-            route
-        )
-
-
-# =========================================================
-# 6. MAIN SOLVER
+# 5. MAIN SOLVER
 # =========================================================
 
 class MySolver(Solver):
@@ -446,54 +330,72 @@ class MySolver(Solver):
         submit_candidate
     ):
 
-        # ---------------------------------------------
-        # STEP 1: Create an initial valid solution
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # STEP 1
+        # Start with the official starter construction.
+        # -------------------------------------------------
 
-        routes = create_initial_routes(
-            instance
-        )
-
-        # If no valid solution could be constructed.
-        if routes is None:
-
-            return {
-                "routes": []
-            }
-
-        # ---------------------------------------------
-        # STEP 2: Improve route order
-        # ---------------------------------------------
-
-        improve_all_routes(
+        routes = StarterSolver().solve(
             instance,
-            routes
-        )
+            submit_candidate
+        )["routes"]
 
-        # ---------------------------------------------
-        # STEP 3: Submit first solution
-        # ---------------------------------------------
+        # Precompute all distances.
+        d = distance_matrix(instance)
+
+        # Calculate route loads.
+        loads = [
+            route_load(instance, route)
+            for route in routes
+        ]
+
+        # -------------------------------------------------
+        # STEP 2
+        # Submit the initial starter solution immediately.
+        # -------------------------------------------------
 
         receipt = submit_candidate({
             "routes": routes
         })
 
-        # ---------------------------------------------
-        # STEP 4: Keep improving while time remains
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # STEP 3
+        # Improve each route using 2-opt.
+        # -------------------------------------------------
 
-        while receipt["remaining_s"] > 0.40:
+        improve_routes(
+            d,
+            routes
+        )
 
-            # Try moving one village.
-            moved = best_relocation(
+        receipt = submit_candidate({
+            "routes": routes
+        })
+
+        # -------------------------------------------------
+        # STEP 4
+        # Repeatedly improve the whole solution.
+        # -------------------------------------------------
+
+        while receipt["remaining_s"] > SAFETY_S:
+
+            improved = False
+
+            # ---------------------------------------------
+            # Try moving one village to another route.
+            # ---------------------------------------------
+
+            if best_relocation(
+                d,
                 instance,
-                routes
-            )
+                routes,
+                loads
+            ):
 
-            if moved:
+                improved = True
 
-                improve_all_routes(
-                    instance,
+                improve_routes(
+                    d,
                     routes
                 )
 
@@ -503,17 +405,21 @@ class MySolver(Solver):
 
                 continue
 
-            # If moving didn't help,
-            # try swapping two villages.
-            swapped = best_swap(
+            # ---------------------------------------------
+            # Try swapping villages between routes.
+            # ---------------------------------------------
+
+            if best_swap(
+                d,
                 instance,
-                routes
-            )
+                routes,
+                loads
+            ):
 
-            if swapped:
+                improved = True
 
-                improve_all_routes(
-                    instance,
+                improve_routes(
+                    d,
                     routes
                 )
 
@@ -523,15 +429,28 @@ class MySolver(Solver):
 
                 continue
 
-            break
+            # ---------------------------------------------
+            # Nothing else improved.
+            # ---------------------------------------------
+
+            if not improved:
+                break
+
+        # -------------------------------------------------
+        # STEP 5
+        # Remove empty routes.
+        # -------------------------------------------------
 
         routes = [
             route
             for route in routes
-            if len(route) > 0
+            if route
         ]
 
-    
+        # -------------------------------------------------
+        # STEP 6
+        # Return final solution.
+        # -------------------------------------------------
 
         return {
             "routes": routes
